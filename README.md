@@ -22,9 +22,9 @@
 ---
 
 ## Ispunjeno iz specifikacije
-- **Proceduralno generisana geometrija** → šahovska tabla  
-- **Proceduralne teksture** → šahovski uzorak u fragment shaderu  
-- **Animated particle systems** → čestice sa kretanjem i interakcijom  
+- **Proceduralno generisana geometrija** - šahovska tabla  
+- **Proceduralne teksture** - šahovski uzorak u fragment shaderu  
+- **Animated particle systems** - čestice sa kretanjem i interakcijom  
 
  Time su već pokrivene tri zahtevane tehnike.
 
