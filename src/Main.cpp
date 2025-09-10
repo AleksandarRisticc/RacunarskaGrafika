@@ -12,7 +12,7 @@
 #include <chrono>
 #include <cmath>
 
-// ================== Particles config (uvećano) ==================
+// ================== Particles config ==================
 static const int   kParticleCount = 2500;
 static const float kSpawnRate     = 900.0f;
 static const float kLifetimeMin   = 1.2f;
@@ -20,10 +20,23 @@ static const float kLifetimeMax   = 2.6f;
 static const float kSpeedMin      = 1.2f;
 static const float kSpeedMax      = 2.6f;
 static const float kGravity       = -2.4f;
-// ================================================================
+// ======================================================
 
-struct Particle { float px, py, pz; float vx, vy, vz; float life; };
-struct GPUVertex { float x, y, z; float life; };
+struct Particle {
+    float px, py, pz;
+    float vx, vy, vz;
+    float life;
+    bool  grounded;   // zalepjena za tablu (XZ)
+    float spread;     // radijus „lokve” na tabli (world units)
+};
+
+// buffer za instanciranje
+struct GPUInst {
+    float x, y, z;
+    float life;
+    float spread;
+    float grounded; // 0 ili 1
+};
 
 static int gWinW = 1000, gWinH = 700;
 
@@ -96,35 +109,61 @@ static void fbSizeCB(GLFWwindow*, int w, int h){
     glViewport(0,0,gWinW,gWinH);
 }
 
-// ================== PARTICLE SHADERS (inline) ==================
-static const char* kParticleVS = R"(#version 330 core
-layout (location=0) in vec3 aPos;
-layout (location=1) in float aLife;
+// ================== PARTICLE SHADERS (billboard + razlivanje) ==================
+static const char* kBillboardVS = R"(#version 330 core
+layout (location=0) in vec2 aCorner; // -1..+1
+layout (location=1) in vec3 iPos;
+layout (location=2) in float iLife;
+layout (location=3) in float iSpread;
+layout (location=4) in float iGrounded;
 
-uniform mat4 uVP;
+uniform mat4  uVP;
+uniform vec3  uRight;
+uniform vec3  uUp;
+uniform float uSizeBase; // poluprečnik sprite-a za leteću česticu
 
 out float vLife;
+out vec2  vUV;
 
-void main(){
-    vLife = clamp(aLife, 0.0, 1.0);
-    vec4 clip = uVP * vec4(aPos, 1.0);
-    gl_Position = clip;
+void main() {
+    vLife = clamp(iLife, 0.0, 1.0);
+    vUV   = aCorner * 0.5 + 0.5;
 
-    // 🔥 Velike čestice, ali i dalje se smanjuju sa daljinom
-    float base = 240.0;                        // bilo ~42.0
-    float size = base / max(clip.w, 0.1);      // perspektivno skaliranje
-    gl_PointSize = clamp(size, 28.0, 256.0);   // veći min/max
+    // 1) billboard ka kameri (right/up)
+    // 2) „lokva” zaljepljena za tablu → XZ osnove
+    vec3 rightCam = normalize(uRight);
+    vec3 upCam    = normalize(uUp);
+
+    vec3 rightBoard = vec3(1.0, 0.0, 0.0);
+    vec3 upBoard    = vec3(0.0, 0.0, 1.0);
+
+    float flySize = uSizeBase * mix(1.8, 0.8, vLife); // leteća: veća kad je sveža
+    float flatSz  = max(iSpread, 0.02);               // „lokva“ po XZ
+
+    vec3 right = mix(rightCam, rightBoard, iGrounded);
+    vec3 up    = mix(upCam,    upBoard,    iGrounded);
+    float sz   = mix(flySize,  flatSz,     iGrounded);
+
+    vec3 worldPos = iPos + (right * aCorner.x + up * aCorner.y) * sz;
+    gl_Position   = uVP * vec4(worldPos, 1.0);
 }
 )";
-static const char* kParticleFS = R"(#version 330 core
+
+static const char* kBillboardFS = R"(#version 330 core
 in float vLife;
+in vec2  vUV;
 out vec4 FragColor;
-void main(){
-    vec2 uv = gl_PointCoord * 2.0 - 1.0;
-    float r = dot(uv, uv);
-    float alpha = smoothstep(1.0, 0.55, r);
-    vec3  color = vec3(1.0, 0.88, 0.55);
-    FragColor = vec4(color, alpha * vLife);
+
+void main() {
+    // mekani disk
+    vec2 p = vUV * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+
+    float alpha = smoothstep(1.0, 0.65, 1.0 - r2) * vLife;
+    vec3  col   = mix(vec3(1.0, 0.55, 0.15), vec3(1.0, 0.9, 0.6), 1.0 - vLife);
+
+    FragColor = vec4(col, alpha);
 }
 )";
 
@@ -142,7 +181,7 @@ int main(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* win = glfwCreateWindow(gWinW,gWinH,"3D Board (thick) + Bigger Particles",nullptr,nullptr);
+    GLFWwindow* win = glfwCreateWindow(gWinW,gWinH,"3D Board + Billboard Particles (spill)",nullptr,nullptr);
     if(!win){ std::cerr<<"Failed to create window\n"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     glfwSwapInterval(1);
@@ -150,13 +189,11 @@ int main(){
 
     glewExperimental = GL_TRUE;
     if (glewInit()!=GLEW_OK){ std::cerr<<"Failed to init GLEW\n"; return -1; }
-    glEnable(GL_PROGRAM_POINT_SIZE);
-
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); // additive (može i ONE_MINUS_SRC_ALPHA)
 
     // === kreiraj programe ===
     // 1) chess.vert/chess.frag iz fajlova (preko SHADER_DIR definisanog u CMakeLists)
@@ -164,11 +201,11 @@ int main(){
     std::string fsPath = std::string(SHADER_DIR) + "/chess.frag";
     std::cout << "Loading shaders from:\n  " << vsPath << "\n  " << fsPath << std::endl;
 
-    GLuint progBoard = link_from_files(vsPath.c_str(), fsPath.c_str()); // << koristi fajlove
+    GLuint progBoard = link_from_files(vsPath.c_str(), fsPath.c_str());
     if (!progBoard) { std::cerr << "FATAL: progBoard == 0 (shader load/link fail)\n"; return -1; }
 
-    // 2) particles iz inline stringova
-    GLuint progPart  = link_src(kParticleVS, kParticleFS);
+    // 2) particles (billboard) iz inline stringova
+    GLuint progPart  = link_src(kBillboardVS, kBillboardFS);
 
     // ---------- GEOMETRIJA TABLE (KUTIJA) ----------
     const float hs = 0.5f;   // half side (pre skaliranja)
@@ -253,19 +290,59 @@ int main(){
     glVertexAttribPointer(2,2,GL_FLOAT,GL_FALSE,stride,(void*)(6*sizeof(float)));     glEnableVertexAttribArray(2);
     glVertexAttribPointer(3,1,GL_FLOAT,GL_FALSE,stride,(void*)(8*sizeof(float)));     glEnableVertexAttribArray(3);
 
-    // ---------- PARTICLES ----------
+    // ---------- PARTICLES: billboard instancing ----------
     std::vector<Particle> ps(kParticleCount);
-    std::vector<GPUVertex> gpu(kParticleCount);
-    for (auto& p: ps) p.life = 0.0f;
+    std::vector<GPUInst>  inst(kParticleCount);
+    for (auto& p: ps) { p.life = 0.0f; p.grounded=false; p.spread=0.0f; }
 
-    GLuint pVAO, pVBO;
-    glGenVertexArrays(1,&pVAO);
-    glGenBuffers(1,&pVBO);
+    // statičan quad (2 trougla)
+    const float quadCorners[8] = {
+        -1.f, -1.f,
+         1.f, -1.f,
+         1.f,  1.f,
+        -1.f,  1.f
+    };
+    const unsigned int quadIdx[6] = { 0,1,2, 2,3,0 };
+
+    GLuint pVAO, vboQuad, eboQuad, vboInst;
+    glGenVertexArrays(1, &pVAO);
     glBindVertexArray(pVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, pVBO);
-    glBufferData(GL_ARRAY_BUFFER, gpu.size()*sizeof(GPUVertex), nullptr, GL_DYNAMIC_DRAW);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(GPUVertex),(void*)0);          glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1,1,GL_FLOAT,GL_FALSE,sizeof(GPUVertex),(void*)(3*sizeof(float))); glEnableVertexAttribArray(1);
+
+    glGenBuffers(1, &vboQuad);
+    glBindBuffer(GL_ARRAY_BUFFER, vboQuad);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadCorners), quadCorners, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2*sizeof(float), (void*)0);
+
+    glGenBuffers(1, &eboQuad);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboQuad);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(quadIdx), quadIdx, GL_STATIC_DRAW);
+
+    glGenBuffers(1, &vboInst);
+    glBindBuffer(GL_ARRAY_BUFFER, vboInst);
+    glBufferData(GL_ARRAY_BUFFER, inst.size()*sizeof(GPUInst), nullptr, GL_DYNAMIC_DRAW);
+
+    // location=1 : iPos (vec3)
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(GPUInst), (void*)0);
+    glVertexAttribDivisor(1, 1);
+
+    // location=2 : iLife (float)
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(GPUInst), (void*)(3*sizeof(float)));
+    glVertexAttribDivisor(2, 1);
+
+    // location=3 : iSpread (float)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(GPUInst), (void*)(4*sizeof(float)));
+    glVertexAttribDivisor(3, 1);
+
+    // location=4 : iGrounded (float)
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(GPUInst), (void*)(5*sizeof(float)));
+    glVertexAttribDivisor(4, 1);
+
+    glBindVertexArray(0);
 
     std::mt19937 rng(12345);
     auto urand = [&](float a, float b){ std::uniform_real_distribution<float> d(a,b); return d(rng); };
@@ -273,23 +350,31 @@ int main(){
     // skala table (da je lako menjati debljinu i veličinu)
     const float BOARD_XZ_SCALE = 5.0f;
     const float BOARD_Y_SCALE  = 2.0f;  // debljina (menjaj ovde)
+
     auto respawn = [&](Particle& p){
         float angle = urand(0.0f, 6.2831853f);
         float r     = urand(0.0f, 0.22f);
         float up    = urand(0.85f, 1.0f);
         float spd   = urand(kSpeedMin, kSpeedMax);
         float boardTopY = 0.05f * BOARD_Y_SCALE; // ht * scaleY
+
         p.px=0.0f; p.py=boardTopY + 0.02f; p.pz=0.0f;
         p.vx = std::cos(angle)*r*spd;
         p.vy = up*spd;
         p.vz = std::sin(angle)*r*spd;
         p.life = urand(kLifetimeMin, kLifetimeMax);
+        p.grounded = false;
+        p.spread   = 0.0f;
     };
 
     auto now = std::chrono::high_resolution_clock::now();
     double spawnAccum = 0.0;
 
     KeyState k1,k2,k3,kP,kO,kR,kEsc;
+
+    // fizika za grounded
+    const float friction   = 1.8f; // trenje na tabli
+    const float spreadGrow = 0.45f;
 
     while(!glfwWindowShouldClose(win)){
         auto newNow = std::chrono::high_resolution_clock::now();
@@ -303,13 +388,14 @@ int main(){
         if (on(GLFW_KEY_3,k3)) { g_showBoard=true;  g_showParticles=true;  }
         if (on(GLFW_KEY_P,kP)) { g_emitOn=true;  }
         if (on(GLFW_KEY_O,kO)) { g_emitOn=false; }
-        if (on(GLFW_KEY_R,kR)) { for(auto& p: ps) p.life=0.0f; }
+        if (on(GLFW_KEY_R,kR)) { for(auto& p: ps) { p.life=0.0f; p.grounded=false; p.spread=0.0f; } }
 
         float aspect = (float)gWinW / (float)gWinH;
         glm::mat4 proj = glm::perspective(glm::radians(gFovDeg), aspect, 0.1f, 100.0f);
         glm::mat4 view = glm::lookAt(gCamPos, gCamTarget, gCamUp);
         glm::mat4 vp   = proj * view;
 
+        // emit
         if (g_emitOn){
             spawnAccum += kSpawnRate * dt;
             int toSpawn = (int)spawnAccum;
@@ -319,24 +405,55 @@ int main(){
                 if (p.life <= 0.0f){ respawn(p); --toSpawn; }
             }
         }
-        float boardTopY = 0.05f * BOARD_Y_SCALE; // zbog odbijanja
+
+        // simulacija
+        float boardTopY = 0.05f * BOARD_Y_SCALE;
         for (auto& p : ps){
             if (p.life <= 0.0f) continue;
-            p.life -= dt;
-            p.vy  += kGravity * dt;
-            p.px  += p.vx * dt;
-            p.py  += p.vy * dt;
-            p.pz  += p.vz * dt;
-            if (p.py < boardTopY) { p.py = boardTopY; p.vy *= -0.35f; }
+
+            if (!p.grounded){
+                // let
+                p.life -= dt;
+                p.vy  += kGravity * dt;
+                p.px  += p.vx * dt;
+                p.py  += p.vy * dt;
+                p.pz  += p.vz * dt;
+
+                // kontakt sa pločom – postani grounded (bez odskoka)
+                if (p.py < boardTopY) {
+                    p.py = boardTopY;
+                    p.vy = 0.0f;
+                    p.grounded = true;
+
+                    // zadrži malo tangencijalne brzine, priguši
+                    p.vx *= 0.35f;
+                    p.vz *= 0.35f;
+
+                    p.spread = 0.06f; // inicijalna lokvica
+                }
+            } else {
+                // klizanje po tabli + rast lokve
+                p.life -= dt * 1.4f;
+
+                p.px   += p.vx * dt;
+                p.pz   += p.vz * dt;
+
+                float damp = std::exp(-friction * dt);
+                p.vx *= damp;
+                p.vz *= damp;
+
+                p.spread = std::min(p.spread + spreadGrow * dt, 0.45f);
+            }
         }
 
+        // upis u instance buffer
         for (size_t i=0;i<ps.size();++i){
             const auto& p = ps[i];
             float lifeNorm = p.life <= 0.0f ? 0.0f : (p.life / kLifetimeMax);
-            gpu[i] = { p.px, p.py, p.pz, lifeNorm };
+            inst[i] = { p.px, p.py, p.pz, lifeNorm, p.spread, p.grounded ? 1.0f : 0.0f };
         }
-        glBindBuffer(GL_ARRAY_BUFFER, pVBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, gpu.size()*sizeof(GPUVertex), gpu.data());
+        glBindBuffer(GL_ARRAY_BUFFER, vboInst);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, inst.size()*sizeof(GPUInst), inst.data());
 
         glClearColor(0.06f, 0.07f, 0.10f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -346,15 +463,15 @@ int main(){
             glUseProgram(progBoard);
 
             glm::mat4 model(1.0f);
-            model = glm::scale(model, glm::vec3(BOARD_XZ_SCALE, BOARD_Y_SCALE, BOARD_XZ_SCALE));
+            model = glm::scale(model, glm::vec3(5.0f, 2.0f, 5.0f)); // BOARD_XZ_SCALE, BOARD_Y_SCALE
             glUniformMatrix4fv(glGetUniformLocation(progBoard, "uModel"), 1, GL_FALSE, &model[0][0]);
             glUniformMatrix4fv(glGetUniformLocation(progBoard, "uVP"),    1, GL_FALSE, &vp[0][0]);
 
             // podesive uniforme u chess.frag
             glUniform1i(glGetUniformLocation(progBoard, "uTiles"), 8);
-            glUniform3f(glGetUniformLocation(progBoard, "colorA"), 0.96f,0.96f,0.96f);
-            glUniform3f(glGetUniformLocation(progBoard, "colorB"), 0.08f,0.08f,0.08f);
-            glUniform3f(glGetUniformLocation(progBoard, "uSideColor"), 0.22f, 0.15f, 0.09f);
+            glUniform3f(glGetUniformLocation(progBoard, "colorA"), 0.92f,0.92f,0.88f);
+            glUniform3f(glGetUniformLocation(progBoard, "colorB"), 0.12f,0.12f,0.12f);
+            glUniform3f(glGetUniformLocation(progBoard, "uSideColor"), 0.18f, 0.12f, 0.08f);
             glUniform3f(glGetUniformLocation(progBoard, "uLightDir"),  -0.4f, 1.0f, 0.3f);
             glUniform1f(glGetUniformLocation(progBoard, "uAmbient"),   0.50f);
 
@@ -363,13 +480,22 @@ int main(){
             glDrawElements(GL_TRIANGLES, (GLsizei)boardIdx.size(), GL_UNSIGNED_INT, 0);
         }
 
-        // 2) Čestice
+        // 2) Čestice (billboards)
         if (g_showParticles){
+            // kamerini vektori
+            glm::vec3 fwd = glm::normalize(gCamTarget - gCamPos);
+            glm::vec3 right = glm::normalize(glm::cross(fwd, gCamUp));
+            glm::vec3 cup   = glm::normalize(glm::cross(right, fwd)); // re-ortogonalizovan up
+
             glUseProgram(progPart);
-            glUniformMatrix4fv(glGetUniformLocation(progPart,"uVP"),1,GL_FALSE,&vp[0][0]);
+            glUniformMatrix4fv(glGetUniformLocation(progPart,"uVP"), 1, GL_FALSE, &vp[0][0]);
+            glUniform3f(glGetUniformLocation(progPart,"uRight"), right.x, right.y, right.z);
+            glUniform3f(glGetUniformLocation(progPart,"uUp"),    cup.x,   cup.y,   cup.z);
+            glUniform1f(glGetUniformLocation(progPart,"uSizeBase"), 0.28f); // probaj 0.22–0.40
+
             glBindVertexArray(pVAO);
             glDepthMask(GL_FALSE);
-            glDrawArrays(GL_POINTS, 0, (GLsizei)gpu.size());
+            glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, (GLsizei)inst.size());
             glDepthMask(GL_TRUE);
         }
 
