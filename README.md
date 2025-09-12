@@ -60,7 +60,7 @@
 - **Korišćenje drugih tekstura pored albedo** - roughness teksturni uzorak za dodatni shine
 - **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje)
   ### Opciono:
-- **Implementiran i zvuk
+- Implementiran i zvuk
 - ## Projekat pokriva sve zahteve specifikacije :D
 
 ---
