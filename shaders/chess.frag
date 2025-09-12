@@ -3,23 +3,41 @@ in vec3 vWorldPos;
 in vec3 vWorldNormal;
 in vec2 vUV;
 in float vTop;
-
+in vec4 vShadowCoord;
 out vec4 FragColor;
 
-uniform int   uTiles     = 8;                          // broj polja po stranici
-uniform vec3  colorA     = vec3(0.93, 0.90, 0.78);     // svetlo drvo
-uniform vec3  colorB     = vec3(0.35, 0.22, 0.12);     // tamno drvo
-uniform vec3  uSideColor = vec3(0.22, 0.15, 0.09);     // boja debljine (stranice+donja)
-uniform vec3  uLightDir  = normalize(vec3(-0.4, 1.0, 0.3));
-uniform float uAmbient   = 0.50;
+uniform int   uTiles;
+uniform vec3  colorA;
+uniform vec3  colorB;
+uniform vec3  uSideColor;
+uniform vec3  uLightPos;
+uniform vec3  uLightDir;
+uniform float uAmbient;
+
+uniform sampler2D uShadowMap;
+uniform int   uShadowsOn;
+
+float pcfShadow(vec3 uvw, float bias){
+    if(uvw.z > 1.0) return 0.0;
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap,0));
+    float s=0.0;
+    for(int dy=-1; dy<=1; ++dy)
+    for(int dx=-1; dx<=1; ++dx){
+        float p = texture(uShadowMap, uvw.xy + vec2(dx,dy)*texel).r;
+        s += (uvw.z - bias > p ? 1.0 : 0.0);
+    }
+    return s/9.0;
+}
 
 void main() {
-    // Lambert osvetljenje
-    float nDotL   = max(dot(normalize(vWorldNormal), normalize(uLightDir)), 0.0);
-    float lighting = clamp(uAmbient + nDotL, 0.0, 1.0);
+    vec3 L = normalize(uLightPos - vWorldPos);
+    float nDotL = max(dot(normalize(vWorldNormal), L), 0.0);
+    float cd    = dot(-L, normalize(uLightDir));
+    float spot  = smoothstep( cos(radians(55.0)), cos(radians(45.0)), cd );
+    float lighting = clamp(uAmbient + nDotL * spot, 0.0, 1.0);
 
+    vec3 base;
     if (vTop > 0.5) {
-        // šahovnica + tanka AA ivica između polja
         int x = int(floor(vUV.x * uTiles));
         int y = int(floor(vUV.y * uTiles));
         vec3 tile = ((x + y) % 2 == 0) ? colorA : colorB;
@@ -27,14 +45,16 @@ void main() {
         float fx   = fract(vUV.x * uTiles);
         float fy   = fract(vUV.y * uTiles);
         float dist = min(min(fx, 1.0 - fx), min(fy, 1.0 - fy));
-        float edge = smoothstep(0.002, 0.010, dist); // prilagodi debljinu ivice po ukusu
+        float edge = smoothstep(0.002, 0.010, dist);
         vec3 borderColor = vec3(0.05);
-
-        vec3 col = mix(borderColor, tile, edge);
-        FragColor = vec4(col * lighting, 1.0);
+        base = mix(borderColor, tile, edge);
     } else {
-        // stranice/dno — puna boja (ako želiš osvetljenje, zameni sa *lighting)
-        FragColor = vec4(uSideColor, 1.0);
-        // FragColor = vec4(uSideColor * lighting, 1.0); // opcija sa osvetljenjem
+        base = uSideColor;
     }
+
+    vec3 uvw = (vShadowCoord.xyz / vShadowCoord.w) * 0.5 + 0.5;
+    float sh = (uShadowsOn!=0) ? pcfShadow(uvw, 0.0008) : 0.0;
+    float shade = mix(1.0, 0.40, sh);
+
+    FragColor = vec4(base * lighting * shade, 1.0);
 }
