@@ -25,6 +25,7 @@
    - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
    - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
 - Implementirana reprodukcija zvuka koriscenjem Win32 Multimedia API-a
+- Implementiran Ambient Occluison - dodatna teksura koja se koristi u shaderima
 
 ## Urađeno (Jovan)
 - Implementirani novi objekti i njihove funkcionalnosti:
