@@ -223,6 +223,8 @@ in vec3 vNormal;
 in vec2 vUV;
 out vec4 FragColor;
 
+uniform sampler2D uAO; //ambient occlusion mapa
+
 uniform vec3  uAlbedo;
 uniform vec3  uCamPos;
 
@@ -283,6 +285,8 @@ void main(){
     float diff   = max(dot(N, L), 0.0);
 
     float rough  = texture(uRoughTex, vUV * uTexTiling).r;
+    float ao     = texture(uAO, vUV * uTexTiling).r;
+    ao = clamp(ao, 0.2, 1.0);
     float shin   = mix(64.0, 8.0, rough);
     float specW  = mix(1.0, 0.25, rough);
 
@@ -293,7 +297,7 @@ void main(){
     // Shadow
     float shadow = shadowFactor(vWorldPos, N, L);
 
-    vec3  light  = (uAmbient + (diff + spec) * atten * spot * shadow) * vec3(1.0);
+    vec3  light  = (uAmbient * ao + (diff + spec) * atten * spot * shadow) * vec3(1.0);
     vec3  col    = uAlbedo * light;
 
     FragColor = vec4(col, 1.0);
@@ -896,6 +900,53 @@ static GLuint makeRoughnessTex(int W=256,int H=256){
     glBindTexture(GL_TEXTURE_2D, 0);
     return tex;
 }
+static GLuint makeAOtex(int W=256,int H=256){
+    std::vector<unsigned char> img(W*H);
+    auto idx=[&](int x,int y){ return y*W + x; };
+
+    // noise
+    for(int y=0;y<H;++y)
+        for(int x=0;x<W;++x)
+            img[idx(x,y)] = (unsigned char)(rand()%256);
+
+    // 3 blura
+    auto pass = [&](const std::vector<unsigned char>& in, std::vector<unsigned char>& out){
+        for(int y=0;y<H;++y){
+            for(int x=0;x<W;++x){
+                int sum=0, cnt=0;
+                for(int dy=-1; dy<=1; ++dy)
+                    for(int dx=-1; dx<=1; ++dx){
+                        int xx=(x+dx+W)%W, yy=(y+dy+H)%H;
+                        sum += in[idx(xx,yy)]; cnt++;
+                    }
+                out[idx(x,y)] = (unsigned char)(sum/cnt);
+            }
+        }
+    };
+
+    std::vector<unsigned char> b1=img, b2=img, b3=img;
+    pass(img, b1);
+    pass(b1,  b2);
+    pass(b2,  b3);
+
+    for(int i=0;i<W*H;++i){
+        float v = b3[i] / 255.0f;
+        v = powf(v, 0.8f);
+        b3[i] = (unsigned char)std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f);
+    }
+
+    GLuint tex=0; glGenTextures(1,&tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, W,H, 0, GL_RED, GL_UNSIGNED_BYTE, b3.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
 
 //================ Kamera / prozor =================
 int gW=1280,gH=720; glm::mat4 gProj(1.f);
@@ -1064,6 +1115,7 @@ int main(){
     gBill.init(progBill);
     uiInit(progUIsh);
     GLuint gRoughTex = makeRoughnessTex();
+    GLuint gAOtex    = makeAOtex();
 
     // Camera
     glm::vec3 eye    = glm::vec3(0.0f, 2.6f, 8.0f);
@@ -1135,6 +1187,7 @@ int main(){
     GLint uM_uShTex = glGetUniformLocation(progMesh,"uShadowMap");
     GLint uM_uShPx  = glGetUniformLocation(progMesh,"uShadowTexel");
     GLint uM_uAmb   = glGetUniformLocation(progMesh,"uAmbient");
+    GLint uM_uAO    = glGetUniformLocation(progMesh,"uAO");
 
     GLint uC_uModel = glGetUniformLocation(progChess,"uModel");
     GLint uC_uVP    = glGetUniformLocation(progChess,"uVP");
@@ -1293,6 +1346,9 @@ int main(){
             glUniform1i(uM_uTex, 0);
             glUniform1f(uM_uTile, 3.0f);
 
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, gAOtex);
+            glUniform1i(uM_uAO, 2);
             glUniform3fv(uM_uLPos,1,glm::value_ptr(lightPos));
             glUniform3fv(uM_uLDir,1,glm::value_ptr(lightDir));
             glUniform1f(uM_uCosI, cosInner);
