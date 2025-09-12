@@ -1,4 +1,4 @@
-## Urađeno do sada (Aleksandar)
+## Urađeno (Aleksandar)
 - Postavljen ceo projekat od nule:
   - CMake konfiguracija
   - Git repozitorijum
@@ -25,7 +25,7 @@
    - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
    - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
 
-## Urađeno do sada (Jovan)
+## Urađeno (Jovan)
 - Implementirani novi objekti i njihove funkcionalnosti:
   - Beli i crni top na početku na suprotnim krajevima table
   - Hijerarhija elemenata i rotirajući elementi na vrhu obe figure
