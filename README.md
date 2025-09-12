@@ -24,6 +24,7 @@
    - Implementiran **tonemapping** shader za kontrolu osvetljenja i kontrasta
    - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
    - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
+- Implementirana reprodukcija zvuka koriscenjem Win32 Multimedia API-a
 
 ## Urađeno (Jovan)
 - Implementirani novi objekti i njihove funkcionalnosti:
@@ -66,7 +67,6 @@
 ### Nemanja
 - Eventualno jos jedna tehnika
 - Eventualno jos pipeline efekata
-- Eventualni zvuk (imamo sve wav fajlove)
 - README  
 
 ---
