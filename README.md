@@ -47,7 +47,7 @@
 ---
 
 ## Ispunjeno iz specifikacije
-- **Generalna 3D grafika** - tabla/cestice
+- **Generalna 3D grafika** - tabla, figure, lampa, cestice...
   ### Tehnike:
 - **Proceduralne teksture** - šahovski uzorak u fragment shaderu  
 - **Animated particle systems** - čestice sa kretanjem i interakcijom
