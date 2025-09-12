@@ -19,11 +19,11 @@
   - Izlaz (ESC)
 - Kamera: podešena perspektivna projekcija, pozicija, target, up vektor, FOV
 -  **Post-processing pipeline**:
-  - Implementiran **framebuffer** i render na ekran preko fullscreen quad-a
-  - Dodata podrška za **više post-processing efekata** u lancu (pipeline)
-  - Implementiran **tonemapping** shader za kontrolu osvetljenja i kontrasta
-  - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
-  - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
+   - Implementiran **framebuffer** i render na ekran preko fullscreen quad-a
+   - Dodata podrška za **više post-processing efekata** u lancu (pipeline)
+   - Implementiran **tonemapping** shader za kontrolu osvetljenja i kontrasta
+   - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
+   - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
 
 ## Urađeno do sada (Jovan)
 - Implementirani novi objekti i njihove funkcionalnosti:
