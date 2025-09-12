@@ -66,6 +66,7 @@
 ### Nemanja
 - Eventualno jos jedna tehnika
 - Eventualno jos pipeline efekata
+- Eventualni zvuk (imamo sve wav fajlove)
 - README  
 
 ---
