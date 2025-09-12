@@ -34,6 +34,7 @@ static GLuint fsVAO=0, fsVBO=0;
 static GLuint progBright=0, progBlur=0, progCombine=0;
 
 static bool gGLReady = false;
+static bool gBloomOn = true;
 
 static int ppW=0, ppH=0;
 
@@ -1067,6 +1068,7 @@ int main(){
     // Input edges
     bool pUp=false,pDown=false,pLeft=false,pRight=false,pR=false;
     bool pW=false,pA=false,pS=false,pD=false;
+    bool pB=false;
     bool mousePrev=false;
 
     // Game state
@@ -1303,7 +1305,7 @@ int main(){
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, sceneColor);
         glUniform1i(glGetUniformLocation(progBright,"uScene"), 0);
-        glUniform1f(glGetUniformLocation(progBright,"uThreshold"), 1.0f); // tweak if needed (0.9–1.3)
+        glUniform1f(glGetUniformLocation(progBright,"uThreshold"), 0.3f); // tweak if needed (0.9–1.3)
         glBindVertexArray(fsVAO);
         glDisable(GL_DEPTH_TEST);
         glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -1336,7 +1338,8 @@ int main(){
         GLuint finalBloomTex = ppTex[horizontal?0:1];
         glBindTexture(GL_TEXTURE_2D, finalBloomTex);
         glUniform1i(glGetUniformLocation(progCombine,"uBloom"), 1);
-        glUniform1f(glGetUniformLocation(progCombine,"uBloomIntensity"), 0.7f);
+        glUniform1f(glGetUniformLocation(progCombine,"uBloomIntensity"),
+            gBloomOn ? 0.7f : 0.0f);
         glUniform1i(glGetUniformLocation(progCombine,"uDoTonemap"), 1);
         glBindVertexArray(fsVAO);
         glDrawArrays(GL_TRIANGLES,0,6);
@@ -1373,6 +1376,10 @@ int main(){
             uiText3x5(gW*0.5f - 180, gH*0.22f, 6.0f, {1,1,1,1}, "ROOK DUEL");
             uiText3x5(gW*0.5f - 280, gH*0.32f, 3.5f, {0.9f,0.9f,0.9f,1},
                       "WHITE: ARROWS\nBLACK: WASD\nCAPTURE BLACK BEFORE TIME HITS 0");
+            char bloomLine[64];
+            std::snprintf(bloomLine, sizeof(bloomLine),
+                          "TURN BLOOM ON :  B");
+            uiText3x5(gW*0.5f - 280, gH*0.42f, 3.5f, {0.9f,0.9f,0.9f,1}, bloomLine);
             uiText3x5(bx+60, by1+22, 3.8f, {0,0,0,1}, "START");
             uiText3x5(bx+72, by2+22, 3.8f, {0,0,0,1}, "EXIT");
             uiFlush(gW,gH);
@@ -1407,6 +1414,11 @@ int main(){
             bool aK     = glfwGetKey(win,GLFW_KEY_A)==GLFW_PRESS;
             bool sK     = glfwGetKey(win,GLFW_KEY_S)==GLFW_PRESS;
             bool dK     = glfwGetKey(win,GLFW_KEY_D)==GLFW_PRESS;
+            bool bK = glfwGetKey(win, GLFW_KEY_B) == GLFW_PRESS;
+            if(bK && !pB){
+                gBloomOn = !gBloomOn;
+            }
+            pB = bK;
 
             moveIfEdge(upK,   pUp,    white.cx, white.cz, 0,-1);
             moveIfEdge(downK, pDown,  white.cx, white.cz, 0,+1);
