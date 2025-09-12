@@ -1,4 +1,4 @@
-## Urađeno (Aleksandar)
+## Urađeno (Aleksandar Ristic RN 37/2021)
 - Postavljen ceo projekat od nule:
   - CMake konfiguracija
   - Git repozitorijum
@@ -27,7 +27,7 @@
 - Implementirana reprodukcija zvuka koriscenjem Win32 Multimedia API-a
 - Implementiran Ambient Occluison - dodatna teksura koja se koristi u shaderima
 
-## Urađeno (Jovan)
+## Urađeno (Jovan Brasanac RN 89/2022)
 - Implementirani novi objekti i njihove funkcionalnosti:
   - Beli i crni top na početku na suprotnim krajevima table
   - Hijerarhija elemenata i rotirajući elementi na vrhu obe figure
