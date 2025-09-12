@@ -26,6 +26,94 @@
 #include <cstring>
 #include <cctype>
 
+// ---------- POST: globals ----------
+static GLuint sceneFBO=0, sceneColor=0, sceneDepth=0;
+static GLuint ppFBO[2]={0,0}, ppTex[2]={0,0};
+static GLuint fsVAO=0, fsVBO=0;
+
+static GLuint progBright=0, progBlur=0, progCombine=0;
+
+static bool gGLReady = false;
+
+static int ppW=0, ppH=0;
+
+static void makeFullscreenQuad(){
+    if(fsVAO) return;
+    const float quad[] = {
+        // pos      // uv
+        -1.f,-1.f, 0.f,0.f,
+         1.f,-1.f, 1.f,0.f,
+         1.f, 1.f, 1.f,1.f,
+        -1.f,-1.f, 0.f,0.f,
+         1.f, 1.f, 1.f,1.f,
+        -1.f, 1.f, 0.f,1.f
+    };
+    glGenVertexArrays(1,&fsVAO);
+    glGenBuffers(1,&fsVBO);
+    glBindVertexArray(fsVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, fsVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,4*sizeof(float),(void*)(2*sizeof(float)));
+    glBindVertexArray(0);
+}
+
+static void destroyPost(){
+    if(sceneFBO){ glDeleteFramebuffers(1,&sceneFBO); sceneFBO=0; }
+    if(sceneColor){ glDeleteTextures(1,&sceneColor); sceneColor=0; }
+    if(sceneDepth){ glDeleteRenderbuffers(1,&sceneDepth); sceneDepth=0; }
+    for(int i=0;i<2;i++){
+        if(ppFBO[i]){ glDeleteFramebuffers(1,&ppFBO[i]); ppFBO[i]=0; }
+        if(ppTex[i]){ glDeleteTextures(1,&ppTex[i]); ppTex[i]=0; }
+    }
+}
+
+static void createPostTargets(int w,int h){
+    if(w<1) w=1; if(h<1) h=1;
+    if(ppW==w && ppH==h && sceneFBO) return;
+    destroyPost();
+    ppW=w; ppH=h;
+
+    // Scene HDR FBO (RGBA16F + depth)
+    glGenFramebuffers(1,&sceneFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
+
+    glGenTextures(1,&sceneColor);
+    glBindTexture(GL_TEXTURE_2D, sceneColor);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w,h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneColor, 0);
+
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+    glGenRenderbuffers(1,&sceneDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, sceneDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w,h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, sceneDepth);
+
+    if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+        std::cerr<<"Scene FBO incomplete!\n";
+
+    // Ping-pong FBOs (RGBA16F, no depth)
+    glGenFramebuffers(2, ppFBO);
+    glGenTextures(2, ppTex);
+    for(int i=0;i<2;i++){
+        glBindFramebuffer(GL_FRAMEBUFFER, ppFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, ppTex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w,h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ppTex[i], 0);
+        if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+            std::cerr<<"PP FBO "<<i<<" incomplete!\n";
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+
 static const float BOARD_SIZE  = 8.4f;
 static const int   BOARD_TILES = 8;
 
@@ -383,6 +471,79 @@ void main(){
     FragColor = vec4(col, alpha);
 }
 )GLSL";
+// ---------- POST: shaders ----------
+static const char* FS_BRIGHT = R"GLSL(
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoord; // set by pipeline
+uniform sampler2D uScene;
+uniform float uThreshold; // e.g. 1.0 (HDR)
+void main(){
+    vec3 col = texture(uScene, TexCoord).rgb;
+    float luma = max(max(col.r,col.g), col.b);
+    vec3 bright = (luma > uThreshold) ? col : vec3(0.0);
+    FragColor = vec4(bright, 1.0);
+}
+)GLSL";
+
+static const char* VS_FSQUAD = R"GLSL(
+#version 330 core
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec2 aUV;
+out vec2 TexCoord;
+void main(){
+    TexCoord = aUV;
+    gl_Position = vec4(aPos,0.0,1.0);
+}
+)GLSL";
+
+static const char* FS_BLUR = R"GLSL(
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoord;
+uniform sampler2D uTex;
+uniform vec2 uTexel; // 1/width, 1/height
+uniform int uHorizontal; // 1=H, 0=V
+void main(){
+    vec2 off = uHorizontal==1 ? vec2(uTexel.x,0.0) : vec2(0.0,uTexel.y);
+    // 5-tap gaussian-ish
+    float w0=0.204164, w1=0.304005, w2=0.093913; // normalized
+    vec3 c = texture(uTex, TexCoord).rgb * w0;
+    c += (texture(uTex, TexCoord + off*1.384615).rgb +
+          texture(uTex, TexCoord - off*1.384615).rgb) * w1;
+    c += (texture(uTex, TexCoord + off*3.230769).rgb +
+          texture(uTex, TexCoord - off*3.230769).rgb) * w2;
+    FragColor = vec4(c,1.0);
+}
+)GLSL";
+
+static const char* FS_COMBINE = R"GLSL(
+#version 330 core
+out vec4 FragColor;
+in vec2 TexCoord;
+uniform sampler2D uScene; // HDR scene
+uniform sampler2D uBloom; // blurred bright
+uniform float uBloomIntensity; // e.g. 0.7
+uniform int   uDoTonemap; // 1 to apply tonemap
+vec3 tonemapACES(vec3 x){
+    // ACES approx (Narkowicz)
+    const float a=2.51, b=0.03, c=2.43, d=0.59, e=0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+}
+void main(){
+    vec3 hdr  = texture(uScene, TexCoord).rgb;
+    vec3 bloom= texture(uBloom, TexCoord).rgb * uBloomIntensity;
+    vec3 col  = hdr + bloom;
+
+    if(uDoTonemap==1){
+        col = tonemapACES(col);
+        // gamma
+        col = pow(col, vec3(1.0/2.2));
+    }
+    FragColor = vec4(col, 1.0);
+}
+)GLSL";
+
 
 //================ Geometrija =====================
 struct Vertex { glm::vec3 p; glm::vec3 n; glm::vec2 uv; float top=1.f; };
@@ -704,6 +865,9 @@ static void framebuffer_size(GLFWwindow*, int w, int h){
     float aspect = (float)w / (float)h;
     if (!std::isfinite(aspect) || aspect <= 0.0f) aspect = 1.0f;
     gProj = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+    if (gGLReady) {
+        createPostTargets(w, h);
+    }
 }
 
 //================== UI helperi (3x5 font + draw list) ======================
@@ -824,6 +988,7 @@ int main(){
 
     glewExperimental=GL_TRUE;
     if(glewInit()!=GLEW_OK){ std::cerr<<"Failed to init GLEW\n"; return -1; }
+    gGLReady = true;
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -837,6 +1002,17 @@ int main(){
     GLuint progUnlit  = link_src(VERT_UNLIT,  FRAG_UNLIT);
     GLuint progShadow = link_src(VERT_SHADOW, FRAG_SHADOW);
     if(!progMesh||!progChess||!progBill||!progUIsh||!progUnlit||!progShadow){ std::cerr<<"FATAL: shader program failed\n"; return -1; }
+    // POST: programs
+    progBright  = link_src(VS_FSQUAD, FS_BRIGHT);
+    progBlur    = link_src(VS_FSQUAD, FS_BLUR);
+    progCombine = link_src(VS_FSQUAD, FS_COMBINE);
+    if(!progBright || !progBlur || !progCombine){
+        std::cerr<<"FATAL: post shaders failed\n";
+        return -1;
+    }
+
+    makeFullscreenQuad();
+    createPostTargets(gW, gH);
 
     // Meshes
     gBoardMesh      = buildChessBoardMesh();
@@ -984,8 +1160,9 @@ int main(){
         glDisable(GL_CULL_FACE);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        // (B) Main scene
+        // (B) Main scene into HDR FBO
         glViewport(0,0,gW,gH);
+        glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
         glClearColor(0.06f,0.07f,0.10f,1.0f);
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
@@ -1121,6 +1298,52 @@ int main(){
             glm::vec3 cup   = glm::normalize(glm::cross(right, fwd));
             gBill.draw(VP, right, cup);
         }
+        glBindFramebuffer(GL_FRAMEBUFFER, ppFBO[0]); // 1) Bright pass
+        glUseProgram(progBright);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sceneColor);
+        glUniform1i(glGetUniformLocation(progBright,"uScene"), 0);
+        glUniform1f(glGetUniformLocation(progBright,"uThreshold"), 1.0f); // tweak if needed (0.9–1.3)
+        glBindVertexArray(fsVAO);
+        glDisable(GL_DEPTH_TEST);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // 2) Blur ping-pong (npr. 6–8 prolaza)
+        bool horizontal = true;
+        int blurPasses = 8;
+        for(int i=0;i<blurPasses;i++){
+            glBindFramebuffer(GL_FRAMEBUFFER, ppFBO[horizontal?1:0]);
+            glUseProgram(progBlur);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, ppTex[horizontal?0:1]); // čitamo iz prethodnog
+            glUniform1i(glGetUniformLocation(progBlur,"uTex"), 0);
+            glUniform2f(glGetUniformLocation(progBlur,"uTexel"), 1.0f/gW, 1.0f/gH);
+            glUniform1i(glGetUniformLocation(progBlur,"uHorizontal"), horizontal?1:0);
+            glBindVertexArray(fsVAO);
+            glDrawArrays(GL_TRIANGLES,0,6);
+            horizontal = !horizontal;
+        }
+
+        // 3) Combine (scene HDR + blurred bright) -> default framebuffer
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0,0,gW,gH);
+        glUseProgram(progCombine);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sceneColor);
+        glUniform1i(glGetUniformLocation(progCombine,"uScene"), 0);
+        glActiveTexture(GL_TEXTURE1);
+        // ako je broj prolaza paran, poslednji blur je u ppTex[0], inače u ppTex[1]
+        GLuint finalBloomTex = ppTex[horizontal?0:1];
+        glBindTexture(GL_TEXTURE_2D, finalBloomTex);
+        glUniform1i(glGetUniformLocation(progCombine,"uBloom"), 1);
+        glUniform1f(glGetUniformLocation(progCombine,"uBloomIntensity"), 0.7f);
+        glUniform1i(glGetUniformLocation(progCombine,"uDoTonemap"), 1);
+        glBindVertexArray(fsVAO);
+        glDrawArrays(GL_TRIANGLES,0,6);
+
+        // restore state (ako treba)
+        glEnable(GL_DEPTH_TEST);
+        glUseProgram(0);
 
         // -------- GAME LOGIC + UI --------
         double mx, my; glfwGetCursorPos(win,&mx,&my);
