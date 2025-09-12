@@ -56,7 +56,8 @@
 - **Interaktivnost** - kretanje šahovskih figura, dugmići, logika igre, tajmer, GUI...
 - **Hijerarhije objekata** - rotirajući elementi vezani za figure
 - **Korišćenje drugih tekstura pored albedo** - roughness teksturni uzorak za dodatni shine
-- **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje) 
+- **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje)
+- ## Projekat pokriva sve zahteve specifikacije :D
 
 ---
 
