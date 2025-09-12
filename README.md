@@ -4,20 +4,26 @@
   - Git repozitorijum
   - Povezivanje biblioteka
   - Struktura `src/` i `shaders/`
-- Sistem za učitavanje šejdera iz fajlova (`chess.vert`, `chess.frag`) sa uniformama iz C++ koda
+- Sistem za učitavanje šejdera iz fajlova (`chess.vert`, `chess.frag`) sa uniformama iz C++ koda - promenjeno (shaderi su sad vecinom u main-u)
 - Proceduralna geometrija šahovske table sa debljinom (mesh generisan u kodu sa normalama i UV koordinatama)
 - Proceduralna šahovska tekstura u shaderu (checkerboard, broj polja, osvetljenje i posebna boja za stranice)
-- Particle system:
-  - Generisanje čestica sa random brzinom, uglom i životnim vekom
+- Particle system (pre nego sto se razvila cela logika aplikacije, cestice se sada okidaju kada beli top pojede crnog):
+  - Generisanje cestica sa random brzinom, uglom i životnim vekom
   - Gravitacija i sudaranje sa gornjom pločom table
   - Gašenje čestica nakon isteka života
-- GPU deo particle sistema (VS + FS za čestice: veličina, fade-out, boja)
-- Tastatura:
+- GPU deo particle sistema (VS + FS za cestice: veličina, fade-out, boja)
+- Tastatura (promenjeno radi logike aplikacije):
   - Uključivanje/isključivanje table i čestica (1, 2, 3)
   - Start/stop emitovanja (P/O)
   - Reset (R)
   - Izlaz (ESC)
 - Kamera: podešena perspektivna projekcija, pozicija, target, up vektor, FOV
+-  **Post-processing pipeline**:
+  - Implementiran **framebuffer** i render na ekran preko fullscreen quad-a
+  - Dodata podrška za **više post-processing efekata** u lancu (pipeline)
+  - Implementiran **tonemapping** shader za kontrolu osvetljenja i kontrasta
+  - Implementiran **bloom efekat** sa threshold-om i blur-om za svetle delove scene
+  - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
 
 ## Urađeno do sada (Jovan)
 - Implementirani novi objekti i njihove funkcionalnosti:
@@ -50,15 +56,16 @@
 - **Interaktivnost** - kretanje šahovskih figura, dugmići, logika igre, tajmer, GUI...
 - **Hijerarhije objekata** - rotirajući elementi vezani za figure
 - **Korišćenje drugih tekstura pored albedo** - roughness teksturni uzorak za dodatni shine
+- **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje) 
 
 ---
 
 ## Šta još treba da se uradi
 
 ### Nemanja
-- Implementirati **post-processing pipeline** (framebuffer, quad, učitavanje post-processing šejdera)  
-- Dodati makar jedan post-processing efekat (npr. blur, invert boja, grayscale)  
-- Dokumentovati pipeline u README  
+- Eventualno jos jedna tehnika
+- Eventualno jos pipeline efekata
+- README  
 
 ---
 
