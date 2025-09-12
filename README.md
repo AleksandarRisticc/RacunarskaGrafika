@@ -68,7 +68,3 @@
 - README  
 
 ---
-
-## Dokumentacija
-- Svako treba da napiše u README koje tehnike je implementirao i ukratko objasni svoj pristup  
-- Po potrebi dopuniti komentarima u kodu (posebno shaderi) 
