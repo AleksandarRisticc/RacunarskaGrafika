@@ -26,6 +26,40 @@
 #include <cstring>
 #include <cctype>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <mmsystem.h>
+#include <filesystem>
+#include <iostream>
+#pragma comment(lib, "winmm.lib")
+
+static inline std::wstring exeDir() {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, buf, MAX_PATH);
+    std::wstring path(buf, n);
+    size_t slash = path.find_last_of(L"\\/");
+    return (slash == std::wstring::npos) ? L"." : path.substr(0, slash);
+}
+
+static inline void play_wav(const wchar_t* nameOrPath) {
+    // Ako je prosleđeno samo ime, probaj pored .exe (build/bin dir)
+    std::wstring path(nameOrPath);
+    if (path.find(L'\\') == std::wstring::npos && path.find(L'/') == std::wstring::npos) {
+        path = exeDir() + L"\\" + path;
+    }
+    if (!std::filesystem::exists(path)) {
+        // Ne pišti – samo prijavi u konzoli.
+        std::wcerr << L"[SFX] Not found: " << path << L"\n";
+        return;
+    }
+    BOOL ok = PlaySoundW(path.c_str(), NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+    if (!ok) {
+        std::wcerr << L"[SFX] Play failed: " << path << L"\n";
+    }
+}
+#endif
+
+
 // ---------- POST: globals ----------
 static GLuint sceneFBO=0, sceneColor=0, sceneDepth=0;
 static GLuint ppFBO[2]={0,0}, ppTex[2]={0,0};
@@ -37,6 +71,13 @@ static bool gGLReady = false;
 static bool gBloomOn = true;
 
 static int ppW=0, ppH=0;
+
+#ifdef _WIN32
+static const wchar_t* SFX_CLICK     = L"click.wav";
+static const wchar_t* SFX_END       = L"end.wav";
+static const wchar_t* SFX_EXPLOSION = L"explosion.wav";
+static const wchar_t* SFX_MOVE      = L"movement.wav";
+#endif
 
 static void makeFullscreenQuad(){
     if(fsVAO) return;
@@ -1391,17 +1432,30 @@ int main(){
                     white.cx=0; white.cz=7; white.alive=true;
                     black.cx=7; black.cz=0; black.alive=true;
                     gBill.clear();
+             #ifdef _WIN32
+                    play_wav(SFX_CLICK);
+             #endif
                 }else if(pointInRect(bx,by2,bw,bh,mx,my)){
+             #ifdef _WIN32
+                    play_wav(SFX_CLICK);
+             #endif
                     glfwSetWindowShouldClose(win,1);
                 }
             }
+
         }
         else if(state == GameState::PLAYING){
             auto moveIfEdge=[&](bool cur,bool& prev, int& cx,int& cz, int dcx, int dcz)->bool{
                 if(cur && !prev){
                     int ncx = std::clamp(cx+dcx, 0, BOARD_TILES-1);
                     int ncz = std::clamp(cz+dcz, 0, BOARD_TILES-1);
-                    if(ncx!=cx || ncz!=cz){ cx=ncx; cz=ncz; prev = cur; return true; }
+                    if(ncx!=cx || ncz!=cz){
+                        cx=ncx; cz=ncz; prev = cur;
+                 #ifdef _WIN32
+                        play_wav(SFX_MOVE);
+                 #endif
+                        return true;
+                    }
                 }
                 prev = cur; return false;
             };
@@ -1443,6 +1497,9 @@ int main(){
                 winnerText = "WHITE WINS";
                 state = GameState::RESULT;
                 resultHold = 2.5f;
+            #ifdef _WIN32
+                play_wav(SFX_EXPLOSION);
+            #endif
             }
 
             if(white.alive && black.alive){
@@ -1452,6 +1509,9 @@ int main(){
                     winnerText = "BLACK WINS";
                     state = GameState::RESULT;
                     resultHold = 2.5f;
+                 #ifdef _WIN32
+                    play_wav(SFX_END);
+                 #endif
                 }
             }
 
