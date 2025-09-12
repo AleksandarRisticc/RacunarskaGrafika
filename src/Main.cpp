@@ -904,12 +904,12 @@ static GLuint makeAOtex(int W=256,int H=256){
     std::vector<unsigned char> img(W*H);
     auto idx=[&](int x,int y){ return y*W + x; };
 
-    // Početni random noise (kao baza AO)
+    // noise
     for(int y=0;y<H;++y)
         for(int x=0;x<W;++x)
             img[idx(x,y)] = (unsigned char)(rand()%256);
 
-    // Učini AO mekšim: 3 blura (box 3x3)
+    // 3 blura
     auto pass = [&](const std::vector<unsigned char>& in, std::vector<unsigned char>& out){
         for(int y=0;y<H;++y){
             for(int x=0;x<W;++x){
@@ -929,10 +929,8 @@ static GLuint makeAOtex(int W=256,int H=256){
     pass(b1,  b2);
     pass(b2,  b3);
 
-    // (Opcionalno) malo podigni midtone da AO ne “uguši” scenu:
     for(int i=0;i<W*H;++i){
         float v = b3[i] / 255.0f;
-        // kriva: blago svetliji mid-ton (gamma ~ 0.8)
         v = powf(v, 0.8f);
         b3[i] = (unsigned char)std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f);
     }
@@ -1351,7 +1349,6 @@ int main(){
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, gAOtex);
             glUniform1i(uM_uAO, 2);
-
             glUniform3fv(uM_uLPos,1,glm::value_ptr(lightPos));
             glUniform3fv(uM_uLDir,1,glm::value_ptr(lightDir));
             glUniform1f(uM_uCosI, cosInner);
