@@ -41,7 +41,7 @@
   - Kretanje crnog topa (WASD)
 - Iskorišćena dodatna tekstura
   - Uveden je roughness teksturni uzorak (proceduralno generisan u CPU-u), koji u šejderu kontroliše specular (Blinn-Phong) i shininess
-- Proširen set aktivnih šejdera (dodati `mesh.vert`, `mesh.frag`, `shadow_depth.vert`, `shadow_depth.frag`)
+- Proširen set aktivnih šejdera (dodati `mesh.vert`, `mesh.frag`, `shadow_depth.vert`, `shadow_depth.frag`) - promenjeno, vecina u main-u
 - Implementirana viseća lampa kao centralni izvor svetlosti
 
 ---
