@@ -88,6 +88,12 @@ static GLint uS_uColorTop = -1, uS_uColorHorizon = -1;
 // ---------- GOD: globals ----------
 static GLuint progGod = 0;
 
+// --- UI 3D ---
+static GLuint progUI3D = 0, ui3DVAO = 0, ui3DVBO = 0;
+struct UI3DVertex { float x,y,z, r,g,b,a; };
+static std::vector<UI3DVertex> ui3DVerts;
+
+
 
 
 static void destroyReflection(){
@@ -480,6 +486,18 @@ static const char* FRAG_UI = R"GLSL(
 in vec4 vCol;
 out vec4 FragColor;
 void main(){ FragColor = vCol; }
+)GLSL";
+
+static const char* VERT_UI3D = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec4 aCol;
+uniform mat4 uVP;
+out vec4 vCol;
+void main(){
+    vCol = aCol;
+    gl_Position = uVP * vec4(aPos, 1.0);
+}
 )GLSL";
 
 //================ shader za lampu =========================
@@ -1410,6 +1428,88 @@ static void uiText3x5(float x,float y, float scale, glm::vec4 col, const std::st
         penx += (px + scale);
     }
 }
+static void ui3DBegin(){ ui3DVerts.clear(); }
+
+//helper za txt u 3d
+static void ui3DQuad(const glm::vec3& center,
+                     const glm::vec3& right,
+                     const glm::vec3& up,
+                     float w, float h,
+                     const glm::vec4& col)
+{
+    glm::vec3 rx = 0.5f * w * right;
+    glm::vec3 uy = 0.5f * h * up;
+    glm::vec3 p0 = center - rx - uy;
+    glm::vec3 p1 = center + rx - uy;
+    glm::vec3 p2 = center + rx + uy;
+    glm::vec3 p3 = center - rx + uy;
+
+    UI3DVertex v[6] = {
+        {p0.x,p0.y,p0.z, col.r,col.g,col.b,col.a},
+        {p1.x,p1.y,p1.z, col.r,col.g,col.b,col.a},
+        {p2.x,p2.y,p2.z, col.r,col.g,col.b,col.a},
+        {p0.x,p0.y,p0.z, col.r,col.g,col.b,col.a},
+        {p2.x,p2.y,p2.z, col.r,col.g,col.b,col.a},
+        {p3.x,p3.y,p3.z, col.r,col.g,col.b,col.a},
+    };
+    ui3DVerts.insert(ui3DVerts.end(), v, v+6);
+}
+
+
+static void ui3DText3x5(const glm::vec3& origin,
+                        const glm::vec3& right,
+                        const glm::vec3& up,
+                        float pixel,
+                        const glm::vec4& col,
+                        const std::string& s)
+{
+    auto putPixel = [&](const glm::vec3& o){
+        ui3DQuad(o, right, up, pixel, pixel, col);
+    };
+
+    float px = 3.0f*pixel;
+    float py = 5.0f*pixel;
+    glm::vec3 pen = origin;
+
+    for(char cc : s){
+        if(cc=='\n'){ pen += up * (py + pixel); continue; }
+        uint16_t bits = glyph3x5(cc);
+        for(int r=0;r<5;++r){
+            for(int c=0;c<3;++c){
+                int bitIndex = (4 - r)*3 + (2 - c);
+                if(bits & (1<<bitIndex)){
+                    glm::vec3 o = pen + right * (c*pixel) + up * (r*pixel);
+                    putPixel(o);
+                }
+            }
+        }
+        pen += right * (px + pixel);
+    }
+}
+
+static void ui3DFlush(const glm::mat4& VP){
+    if(ui3DVerts.empty()) return;
+
+    // depth ON (da se sakrije iza objekata), blending ON (transparentno)
+    GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
+    if(!depthWas) glEnable(GL_DEPTH_TEST);
+    GLboolean blendWas = glIsEnabled(GL_BLEND);
+    if(!blendWas) glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(progUI3D);
+    glUniformMatrix4fv(glGetUniformLocation(progUI3D,"uVP"),1,GL_FALSE,glm::value_ptr(VP));
+    glBindVertexArray(ui3DVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, ui3DVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, ui3DVerts.size()*sizeof(UI3DVertex), ui3DVerts.data());
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)ui3DVerts.size());
+    glBindVertexArray(0);
+    glUseProgram(0);
+
+    if(!blendWas) glDisable(GL_BLEND);
+    if(!depthWas) glDisable(GL_DEPTH_TEST);
+}
+
 
 //================== Main =========================
 enum class GameState { MENU, PLAYING, RESULT };
@@ -1419,7 +1519,7 @@ int main(){
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* win = glfwCreateWindow(gW,gH,"Rook Duel + Spotlight Shadows (no-audio)",nullptr,nullptr);
+    GLFWwindow* win = glfwCreateWindow(gW,gH,"Rook Duel",nullptr,nullptr);
     if(!win){ std::cerr<<"Failed to create window\n"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(win);
     glfwSetFramebufferSizeCallback(win, framebuffer_size);
@@ -1440,6 +1540,13 @@ int main(){
     GLuint progChess  = link_src(VERT_CHESS,  FRAG_CHESS);
     GLuint progBill   = link_src(BILL_VS,     BILL_FS);
     GLuint progUIsh   = link_src(VERT_UI,     FRAG_UI);
+
+    progUI3D = link_src(VERT_UI3D, FRAG_UI);
+    if(!progUI3D){
+        std::cerr << "FATAL: UI3D shader failed\n";
+        return -1;
+    }
+
     GLuint progUnlit  = link_src(VERT_UNLIT,  FRAG_UNLIT);
     GLuint progShadow = link_src(VERT_SHADOW, FRAG_SHADOW);
     if(!progMesh||!progChess||!progBill||!progUIsh||!progUnlit||!progShadow){ std::cerr<<"FATAL: shader program failed\n"; return -1; }
@@ -1483,6 +1590,16 @@ int main(){
     gSkyMesh = buildSkyCube();
     gBill.init(progBill);
     uiInit(progUIsh);
+    // init 3D UI buffer/VAO
+    glGenVertexArrays(1,&ui3DVAO);
+    glGenBuffers(1,&ui3DVBO);
+    glBindVertexArray(ui3DVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, ui3DVBO);
+    glBufferData(GL_ARRAY_BUFFER, 1024*1024, nullptr, GL_DYNAMIC_DRAW); // 1MB za quads
+    glEnableVertexAttribArray(0); glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(UI3DVertex),(void*)0);
+    glEnableVertexAttribArray(1); glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,sizeof(UI3DVertex),(void*)(3*sizeof(float)));
+    glBindVertexArray(0);
+
     GLuint gRoughTex = makeRoughnessTex();
     GLuint gAOtex    = makeAOtex();
 
@@ -1678,11 +1795,8 @@ int main(){
         glUseProgram(0);
         glDepthMask(GL_TRUE);
 
-
-
-
-glEnable(GL_CULL_FACE);
-glCullFace(GL_BACK);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
 
 // 0 lampa
 {
@@ -1959,6 +2073,8 @@ glBindFramebuffer(GL_FRAMEBUFFER, 0);
             glBindTexture(GL_TEXTURE_2D, 0);
             glUseProgram(0);
         }
+
+
         // 2.5 voda
         {
             glUseProgram(progWater);
@@ -2005,6 +2121,38 @@ glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
             glBindTexture(GL_TEXTURE_2D, 0);
             glUseProgram(0);
+        }
+        // 2.6 GUI u 3d prostoru
+        {
+            ui3DBegin();
+
+            // white (XD) iznad topa
+            if(white.alive){
+                glm::vec3 base = gridToWorld(white.cx, white.cz) + glm::vec3(0.0f, 1.10f, 0.0f);
+
+                glm::vec3 fwd   = glm::normalize(center - eye);
+                glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0,1,0)));
+                glm::vec3 up3d  = glm::vec3(0,1,0);
+                float pixel = 0.02f;
+                ui3DText3x5(base, right, up3d, pixel, {1,1,1,0.95f}, "WHITE");
+
+                float w = (3.0f*5 + 4.0f) * pixel;
+                float h = (5.0f + 1.0f) * pixel;
+                glm::vec3 centerQuad = base + right*(w*0.5f) + up3d*(h*0.5f);
+                ui3DQuad(centerQuad, right, up3d, w*1.1f, h*1.4f, {0,0,0,0.25f});
+            }
+           // black (XD) znad topa
+            if(black.alive){
+                glm::vec3 base = gridToWorld(black.cx, black.cz) + glm::vec3(0.0f, 1.10f, 0.0f);
+                glm::vec3 fwd   = glm::normalize(center - eye);
+                glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0,1,0)));
+                glm::vec3 up3d  = glm::vec3(0,1,0);
+                float pixel = 0.02f;
+                ui3DText3x5(base, right, up3d, pixel, {1,0.85f,0.2f,0.95f}, "BLACK");
+            }
+
+            glm::mat4 VP = gProj * view;
+            ui3DFlush(VP);
         }
 
 
