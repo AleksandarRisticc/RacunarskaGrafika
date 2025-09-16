@@ -26,6 +26,10 @@
    - Dodata tastaturna kontrola za uključivanje/isključivanje bloom-a ("B")
 - Implementirana reprodukcija zvuka koriscenjem Win32 Multimedia API-a
 - Implementiran Ambient Occluison - dodatna teksura koja se koristi u shaderima
+- Implementirano renderovanje vode ispod sahovsle table
+- Implementiran skybox
+- Implementiran Volumetric light scattering (Godray)
+- Implementiran Font and GUI rendering, GUIs in 3D space (iznad belog i crnog topa)
 
 ## Urađeno (Jovan Brasanac RN 89/2022)
 - Implementirani novi objekti i njihove funkcionalnosti:
