@@ -72,6 +72,44 @@ static bool gBloomOn = true;
 
 static int ppW=0, ppH=0;
 
+// ---------- WATER: globals ----------
+static GLuint reflectFBO=0, reflectTex=0, reflectDepth=0;
+static GLuint progWater=0;
+static float  gWaterY = -0.50f;
+static float gOceanScale = 220.0f; // veličina okeana u world jedinicama
+
+
+static void destroyReflection(){
+    if(reflectFBO){ glDeleteFramebuffers(1,&reflectFBO); reflectFBO=0; }
+    if(reflectTex){ glDeleteTextures(1,&reflectTex); reflectTex=0; }
+    if(reflectDepth){ glDeleteRenderbuffers(1,&reflectDepth); reflectDepth=0; }
+}
+
+static void createReflectionTargets(int w,int h){
+    destroyReflection();
+    if(w<1) w=1; if(h<1) h=1;
+    glGenFramebuffers(1,&reflectFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, reflectFBO);
+
+    glGenTextures(1,&reflectTex);
+    glBindTexture(GL_TEXTURE_2D, reflectTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w,h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, reflectTex, 0);
+
+    glGenRenderbuffers(1,&reflectDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, reflectDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w,h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, reflectDepth);
+
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    if(glCheckFramebufferStatus(GL_FRAMEBUFFER)!=GL_FRAMEBUFFER_COMPLETE)
+        std::cerr<<"Reflection FBO incomplete!\n";
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+
 #ifdef _WIN32
 static const wchar_t* SFX_CLICK     = L"click.wav";
 static const wchar_t* SFX_END       = L"end.wav";
@@ -590,6 +628,203 @@ void main(){
 }
 )GLSL";
 
+//================ Water shaders ==========================
+static const char* VERT_WATER = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
+layout(location=3) in float aTop; // unused
+
+uniform mat4 uModel;
+uniform mat4 uVP;       // kamera (view*proj)
+uniform mat4 uRefVP;    // reflektovana kamera
+uniform float uTime;
+uniform float uAmp;     // bazna amplituda
+uniform float uFreq;    // bazna frekvencija
+uniform float uSpeed;   // bazna brzina
+
+out vec3 vWorldPos;
+out vec3 vWorldNormal;
+out vec2 vUV;
+out vec4 vRefClip;
+
+struct Wave { vec2 dir; float amp, freq, speed, steep; };
+
+void gerstner(in vec2 xz, in float t, in Wave w,
+              inout vec3 disp, inout vec3 grad)
+{
+    float k   = w.freq;
+    float a   = w.amp;
+    float q   = w.steep;     // 0..1
+    vec2 X = xz + w.dir * (t * 0.6);  // 0.6 = drift koeficijent (povećaj za brže)
+    float ph = dot(X, w.dir)*k + t*w.speed;
+
+    float s   = sin(ph);
+    float c   = cos(ph);
+
+    // pomeraj povrsine (horizontal + vertikalni)
+    disp.xz += (w.dir * (q*a) * c);
+    disp.y  += a * s;
+
+    // ∂h/∂x, ∂h/∂z (za normalu)
+    grad.x +=  a * k * w.dir.x * c;
+    grad.z +=  a * k * w.dir.y * c;
+}
+
+void main(){
+    // world-space pozicija pre deformacije
+    vec4 wp0 = uModel * vec4(aPos,1.0);
+    vec2 xz  = wp0.xz;
+
+    // definisi 3 talasa (pravci/frekv/ampl/steepness)
+    Wave w1 = Wave(normalize(vec2( 1.0, 0.35)), uAmp,        uFreq*1.0,  uSpeed*1.10, 0.85);
+    Wave w2 = Wave(normalize(vec2(-0.45, 1.0 )), uAmp*0.6,   uFreq*1.7,  uSpeed*1.45, 0.80);
+    Wave w3 = Wave(normalize(vec2( 0.2,  1.0 )), uAmp*0.35,  uFreq*2.6,  uSpeed*1.90, 0.75);
+
+    vec3 disp = vec3(0.0);
+    vec3 grad = vec3(0.0);
+    gerstner(xz, uTime, w1, disp, grad);
+    gerstner(xz, uTime, w2, disp, grad);
+    gerstner(xz, uTime, w3, disp, grad);
+
+    disp *= 1.20;   // +20% jači pomeraj (odmah vidljiv efekat)
+
+    // world-space pozicija posle deformacije
+    vec4 wp = vec4(wp0.xyz + disp, 1.0);
+
+    // bazna normala iz model matrice (ravna površina)…
+    vec3 baseN = normalize(mat3(transpose(inverse(uModel))) * vec3(0,1,0));
+    // … pa je blendamo sa normalom iz gradijenta
+    vec3 nWave = normalize(vec3(-grad.x, 1.0, -grad.z));
+    vWorldNormal = normalize(mix(baseN, nWave, 0.9));
+
+    vWorldPos = wp.xyz;
+    vUV       = aUV;
+
+    gl_Position = uVP * wp;
+    vRefClip    = uRefVP * wp; // bitno: računaj iz **deformisane** pozicije
+}
+)GLSL";
+
+static const char* FRAG_WATER = R"GLSL(
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vWorldNormal;
+in vec2 vUV;
+in vec4 vRefClip;
+out vec4 FragColor;
+
+uniform sampler2D uReflect;
+uniform float uTime;
+uniform vec3  uCamPos;
+uniform vec3  uTint;
+uniform float uF0;
+uniform float uDistort; // skalar za UV pomeraj iz Gerstner pomeraja
+uniform float uAmp;     // osnovna amplituda (svaka oktava je slabija)
+uniform float uFreq;    // osnovna frekvencija
+uniform float uSpeed;
+uniform vec3  uLightPos;
+
+// ------------------------------------------------------------------
+// 3 Gerstner talasa: pomeraj povrsine + normalna iz parcijalnih deriv.
+// ------------------------------------------------------------------
+struct Wave { vec2 dir; float amp, freq, speed, steep; };
+
+void gerstner(in vec2 xz, in float t, in Wave w,
+              inout vec3 disp, inout vec3 grad)
+{
+    float k   = w.freq;           // "talasni broj"
+    float a   = w.amp;
+    float q   = w.steep;          // 0..1 "choppiness"
+    float ph  = dot(xz, w.dir)*k + t*w.speed;
+
+    float s   = sin(ph);
+    float c   = cos(ph);
+
+    // horizontalni pomeraj (Gerstner)
+    disp.xz += (w.dir * (q*a) * c);
+    disp.y  += a * s;
+
+    // gradijent visine (∂h/∂x, ∂h/∂z) -> za normalu
+    grad.x +=  a * k * w.dir.x * c;
+    grad.z +=  a * k * w.dir.y * c;
+}
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+
+void main(){
+    // bazne smernice talasa (normalizovane)
+    Wave w1 = Wave(normalize(vec2( 1.0, 0.35)), uAmp,          uFreq*1.0,  uSpeed*1.10, 0.85);
+    Wave w2 = Wave(normalize(vec2(-0.45, 1.0 )), uAmp*0.6,     uFreq*1.7,  uSpeed*1.45, 0.80);
+    Wave w3 = Wave(normalize(vec2( 0.2,  1.0 )), uAmp*0.35,    uFreq*2.6,  uSpeed*1.90, 0.75);
+
+    vec2 xz = vWorldPos.xz;
+
+    // akumulacija pomeraja i gradijenta
+    vec3 disp = vec3(0.0);
+    vec3 grad = vec3(0.0);
+
+    gerstner(xz, uTime, w1, disp, grad);
+    gerstner(xz, uTime, w2, disp, grad);
+    gerstner(xz, uTime, w3, disp, grad);
+
+    // iz gradijenta dobijamo normalu ( -∂h/∂x, 1, -∂h/∂z )
+    vec3 Nw = normalize(vec3(-grad.x, 1.0, -grad.z));
+
+    // blend sa ravnom da bude stabilno
+    Nw = normalize(mix(vWorldNormal, Nw, 0.9));
+
+    // Fresnel
+    vec3 V = normalize(uCamPos - vWorldPos);
+    float VoN = clamp(dot(V, Nw), 0.0, 1.0);
+    float fres = uF0 + (1.0 - uF0) * pow(1.0 - VoN, 5.0);
+
+    // planarna projekcija refleksije
+    if (vRefClip.w <= 0.0) discard;
+    vec2 refUV = (vRefClip.xy / vRefClip.w) * 0.5 + 0.5;
+
+    // UV distorzija iz HORIZONTALNOG pomeraja talasa (ne iz normale)
+    // -> daje "valjanje" bez pruga
+    refUV += disp.xz * uDistort;
+
+    // anti-alias: priguši visoke frekvencije kad su UV derivati veliki
+    float aa = clamp(1.0 - 6.0 * max(length(fwidth(refUV)), 0.0), 0.0, 1.0);
+
+    // fade pri ivici reflection FBO-a
+    float edge = min(min(refUV.x, 1.0 - refUV.x), min(refUV.y, 1.0 - refUV.y));
+    float fade = smoothstep(0.0, 0.025, edge);
+
+    // blago "zamućenje" refleksije (dva uzorka)
+    vec2 off = Nw.xz * 0.0025;
+    vec3 r0 = texture(uReflect, clamp(refUV,        0.0, 1.0)).rgb;
+    vec3 r1 = texture(uReflect, clamp(refUV + off,  0.0, 1.0)).rgb;
+    vec3 refl = mix(r0, r1, 0.5);
+
+    // absorption/tint
+    float absorb = smoothstep(0.0, 0.7, 1.0 - VoN);
+    vec3 color = mix(uTint, refl, fres);
+    color = mix(color, uTint, absorb * 0.25);
+
+    // suptilan spekular (da ne pravi "zvezdice")
+    vec3  L  = normalize(uLightPos - vWorldPos);
+    vec3  H  = normalize(L + V);
+    float spec = pow(max(dot(Nw, H), 0.0), 96.0) * 0.18;
+    color += spec;
+
+    // sitan šum i fade-ovi
+    color += (hash(vWorldPos.xz*47.0 + uTime) - 0.5) * 0.008;
+    color *= aa;                      // AA damping
+    color = mix(uTint, color, fade);  // fade ka ivici
+
+    FragColor = vec4(color, 1.0);
+}
+)GLSL";
+
+
+
+
+
 
 //================ Geometrija =====================
 struct Vertex { glm::vec3 p; glm::vec3 n; glm::vec2 uv; float top=1.f; };
@@ -703,6 +938,34 @@ static Mesh buildUnitCylinder(){
     makeCylinder(V,I,0.5f,1.0f,32);
     Mesh m; m.upload(V,I); return m;
 }
+static Mesh gWaterMesh;
+static Mesh buildWaterGrid(int N = 128){
+    // N x N quad-grid u XZ ravni (y=0), normal (0,1,0), UV 0..1
+    std::vector<Vertex> V; V.reserve((N+1)*(N+1));
+    std::vector<unsigned> I; I.reserve(N*N*6);
+
+    for(int z=0; z<=N; ++z){
+        float tz = (float)z / (float)N;
+        for(int x=0; x<=N; ++x){
+            float tx = (float)x / (float)N;
+            float px = tx - 0.5f;      // -0.5..+0.5
+            float pz = tz - 0.5f;
+            V.push_back({ {px, 0.0f, pz}, {0,1,0}, {tx, tz}, 1.0f });
+        }
+    }
+    auto idx = [N](int x,int z){ return z*(N+1) + x; };
+    for(int z=0; z<N; ++z){
+        for(int x=0; x<N; ++x){
+            unsigned a = idx(x,   z);
+            unsigned b = idx(x+1, z);
+            unsigned c = idx(x+1, z+1);
+            unsigned d = idx(x,   z+1);
+            I.insert(I.end(), {a,b,c, a,c,d});
+        }
+    }
+    Mesh m; m.upload(V, I); return m;
+}
+
 
 //================ Pieces (po gridu) =================
 struct Piece {
@@ -960,6 +1223,7 @@ static void framebuffer_size(GLFWwindow*, int w, int h){
     gProj = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
     if (gGLReady) {
         createPostTargets(w, h);
+        createReflectionTargets(w, h);
     }
 }
 
@@ -1095,6 +1359,12 @@ int main(){
     GLuint progUnlit  = link_src(VERT_UNLIT,  FRAG_UNLIT);
     GLuint progShadow = link_src(VERT_SHADOW, FRAG_SHADOW);
     if(!progMesh||!progChess||!progBill||!progUIsh||!progUnlit||!progShadow){ std::cerr<<"FATAL: shader program failed\n"; return -1; }
+    progWater = link_src(VERT_WATER, FRAG_WATER);
+    if(!progWater){
+        std::cerr << "FATAL: water shader failed\n";
+        return -1;
+    }
+
     // POST: programs
     progBright  = link_src(VS_FSQUAD, FS_BRIGHT);
     progBlur    = link_src(VS_FSQUAD, FS_BLUR);
@@ -1106,12 +1376,14 @@ int main(){
 
     makeFullscreenQuad();
     createPostTargets(gW, gH);
+    createReflectionTargets(gW, gH);
 
     // Meshes
     gBoardMesh      = buildChessBoardMesh();
     gRookBodyMesh   = buildRookBodyMesh();
     gRookCrenelMesh = buildRookCrenelMesh();
     gUnitCyl        = buildUnitCylinder();
+    gWaterMesh = buildWaterGrid(128);
     gBill.init(progBill);
     uiInit(progUIsh);
     GLuint gRoughTex = makeRoughnessTex();
@@ -1122,6 +1394,14 @@ int main(){
     glm::vec3 center = glm::vec3(0.0f, 0.8f, 0.0f);
     glm::vec3 up     = glm::vec3(0.0f, 1.0f, 0.0f);
     glm::mat4 view   = glm::lookAt(eye, center, up);
+
+    // Reflektovana kamera preko ravni y=gWaterY (normal (0,1,0))
+    glm::vec3 eyeRef    = glm::vec3(eye.x,    2.0f*gWaterY - eye.y,    eye.z);
+    glm::vec3 centerRef = glm::vec3(center.x, 2.0f*gWaterY - center.y, center.z);
+    // up invertovan po y da zadrži desni sistem
+    glm::vec3 upRef     = glm::vec3(0.0f, -1.0f, 0.0f);
+    glm::mat4 viewRef   = glm::lookAt(eyeRef, centerRef, upRef);
+    glm::mat4 VPRef     = gProj * viewRef;
 
     // Spotlight params
     glm::vec3 lightPos = glm::vec3(0.0f, LIGHT_HEIGHT-0.45f, 0.0f); // centar
@@ -1207,6 +1487,21 @@ int main(){
     GLint uS_uModel = glGetUniformLocation(progShadow,"uModel");
     GLint uS_uLVP   = glGetUniformLocation(progShadow,"uLightVP");
 
+    // Water uniforms
+    GLint uW_uModel = glGetUniformLocation(progWater, "uModel");
+    GLint uW_uVP    = glGetUniformLocation(progWater, "uVP");
+    GLint uW_uRefVP = glGetUniformLocation(progWater, "uRefVP");
+    GLint uW_uRef   = glGetUniformLocation(progWater, "uReflect");
+    GLint uW_uTime  = glGetUniformLocation(progWater, "uTime");
+    GLint uW_uCam   = glGetUniformLocation(progWater, "uCamPos");
+    GLint uW_uTint  = glGetUniformLocation(progWater, "uTint");
+    GLint uW_uF0    = glGetUniformLocation(progWater, "uF0");
+    GLint uW_uDist  = glGetUniformLocation(progWater, "uDistort");
+    GLint uW_uAmp   = glGetUniformLocation(progWater, "uAmp");
+    GLint uW_uFreq  = glGetUniformLocation(progWater, "uFreq");
+    GLint uW_uSpeed = glGetUniformLocation(progWater, "uSpeed");
+    GLint uW_uLight = glGetUniformLocation(progWater, "uLightPos");
+
     double lastT=glfwGetTime();
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
@@ -1255,6 +1550,143 @@ int main(){
         glCullFace(GL_BACK);
         glDisable(GL_CULL_FACE);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // (Ref) Reflection pass into reflectFBO
+glViewport(0,0,gW,gH);
+glBindFramebuffer(GL_FRAMEBUFFER, reflectFBO);
+glClearColor(0.06f,0.07f,0.10f,1.0f);
+glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+// Kod refleksije: zbog mirrora često treba okrenuti culling.
+// Tvoj glCullFace je uglavnom OFF; ali za sigurnost:
+glEnable(GL_CULL_FACE);
+glCullFace(GL_BACK); // ostavi default, naše mesh-evi su simetrični
+
+// 0) Lampa (unlit) ali sa viewRef
+{
+    glUseProgram(progUnlit);
+    GLint uUL_Model = glGetUniformLocation(progUnlit,"uModel");
+    GLint uUL_View  = glGetUniformLocation(progUnlit,"uView");
+    GLint uUL_Proj  = glGetUniformLocation(progUnlit,"uProj");
+    GLint uUL_Color = glGetUniformLocation(progUnlit,"uColor");
+    glUniformMatrix4fv(uUL_View,1,GL_FALSE,glm::value_ptr(viewRef));
+    glUniformMatrix4fv(uUL_Proj,1,GL_FALSE,glm::value_ptr(gProj));
+
+    const float ceilingTop = LIGHT_HEIGHT + 1.2f;
+    const float cableTop   = ceilingTop;
+    const float cableBot   = LIGHT_HEIGHT;
+    const float cableLen   = cableTop - cableBot;
+    const float cableCY    = 0.5f*(cableTop + cableBot);
+
+    glm::mat4 M = glm::translate(glm::mat4(1), glm::vec3(0.0f, cableCY, 0.0f))
+                * glm::scale(glm::mat4(1), glm::vec3(0.06f, cableLen, 0.06f));
+    glUniformMatrix4fv(uUL_Model,1,GL_FALSE,glm::value_ptr(M));
+    glUniform3f(uUL_Color, 0.18f,0.18f,0.18f);
+    gUnitCyl.draw();
+
+    M = glm::translate(glm::mat4(1), glm::vec3(0.0f, LIGHT_HEIGHT-0.10f, 0.0f))
+      * glm::scale(glm::mat4(1), glm::vec3(0.22f, 0.20f, 0.22f));
+    glUniformMatrix4fv(uUL_Model,1,GL_FALSE,glm::value_ptr(M));
+    glUniform3f(uUL_Color, 0.22f,0.22f,0.22f);
+    gUnitCyl.draw();
+
+    M = glm::translate(glm::mat4(1), glm::vec3(0.0f, LIGHT_HEIGHT-0.32f, 0.0f))
+      * glm::scale(glm::mat4(1), glm::vec3(0.55f, 0.25f, 0.55f));
+    glUniformMatrix4fv(uUL_Model,1,GL_FALSE,glm::value_ptr(M));
+    glUniform3f(uUL_Color, 0.10f,0.10f,0.10f);
+    gUnitCyl.draw();
+
+    M = glm::translate(glm::mat4(1), glm::vec3(0.0f, LIGHT_HEIGHT-0.45f, 0.0f))
+      * glm::scale(glm::mat4(1), glm::vec3(0.18f, 0.22f, 0.18f));
+    glUniformMatrix4fv(uUL_Model,1,GL_FALSE,glm::value_ptr(M));
+    glUniform3f(uUL_Color, 1.0f, 0.96f, 0.80f);
+    gUnitCyl.draw();
+
+    glUseProgram(0);
+}
+
+// 1) Tabla (sa istim senkama; viewRef)
+{
+    glUseProgram(progChess);
+    glm::mat4 model = glm::translate(glm::mat4(1), glm::vec3(0.0f, -0.09f, 0.0f));
+    glm::mat4 VP    = gProj * viewRef;
+    glUniformMatrix4fv(uC_uModel,1,GL_FALSE,glm::value_ptr(model));
+    glUniformMatrix4fv(uC_uVP,   1,GL_FALSE,glm::value_ptr(VP));
+    glUniform1i(uC_uTiles, BOARD_TILES);
+    glUniform3f(uC_cA, 0.92f,0.92f,0.92f);
+    glUniform3f(uC_cB, 0.08f,0.08f,0.08f);
+    glUniform3f(uC_side, 0.18f,0.12f,0.08f);
+    glUniform3fv(uC_lPos,1,glm::value_ptr(lightPos));
+    glUniform3fv(uC_lDir,1,glm::value_ptr(lightDir));
+    glUniform1f(uC_cI, cosInner);
+    glUniform1f(uC_cO, cosOuter);
+    glUniformMatrix4fv(uC_lVP,1,GL_FALSE,glm::value_ptr(lightVP));
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, shadowTex);
+    glUniform1i(uC_sh, 1);
+    glUniform2f(uC_shPx, 1.0f/SHADOW_RES, 1.0f/SHADOW_RES);
+    glUniform1f(uC_amb, 0.35f);
+    gBoardMesh.draw();
+    glBindTexture(GL_TEXTURE_2D,0);
+    glUseProgram(0);
+}
+
+// 2) Figure (viewRef)
+{
+    glUseProgram(progMesh);
+    glUniformMatrix4fv(uM_uView,1,GL_FALSE,glm::value_ptr(viewRef));
+    glUniformMatrix4fv(uM_uProj,1,GL_FALSE,glm::value_ptr(gProj));
+    glUniform3fv(uM_uCam,1,glm::value_ptr(eyeRef));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gRoughTex);
+    glUniform1i(uM_uTex, 0);
+    glUniform1f(uM_uTile, 3.0f);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, gAOtex);
+    glUniform1i(uM_uAO, 2);
+    glUniform3fv(uM_uLPos,1,glm::value_ptr(lightPos));
+    glUniform3fv(uM_uLDir,1,glm::value_ptr(lightDir));
+    glUniform1f(uM_uCosI, cosInner);
+    glUniform1f(uM_uCosO, cosOuter);
+    glUniformMatrix4fv(uM_uLVP,1,GL_FALSE,glm::value_ptr(lightVP));
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, shadowTex);
+    glUniform1i(uM_uShTex, 1);
+    glUniform2f(uM_uShPx, 1.0f/SHADOW_RES, 1.0f/SHADOW_RES);
+    glUniform1f(uM_uAmb, 0.28f);
+
+    auto drawRookAnimatedRef=[&](const Piece& P){
+        if(!P.alive) return;
+        glm::mat4 Troot = glm::translate(glm::mat4(1), gridToWorld(P.cx,P.cz))
+                        * glm::scale(glm::mat4(1), glm::vec3(ROOK_SCALE));
+        glUniform3fv(uM_uAlb,1,glm::value_ptr(P.color));
+        glUniformMatrix4fv(uM_uModel,1,GL_FALSE,glm::value_ptr(Troot));
+        gRookBodyMesh.draw();
+
+        float ringR = 0.42f;
+        float yTop  = 0.72f;
+        float ang0  = t * 0.6f;
+        float bob   = std::sin(t*1.7f)*0.02f;
+        for(int i=0;i<4;i++){
+            float a = ang0 + i * glm::half_pi<float>();
+            glm::vec3 pos = { ringR*std::cos(a), yTop + bob, ringR*std::sin(a) };
+            glm::mat4 Mchild = Troot
+                * glm::translate(glm::mat4(1), pos)
+                * glm::rotate(glm::mat4(1), a + t*1.2f, glm::vec3(0,1,0));
+            glUniformMatrix4fv(uM_uModel,1,GL_FALSE,glm::value_ptr(Mchild));
+            gRookCrenelMesh.draw();
+        }
+    };
+    drawRookAnimatedRef(white);
+    drawRookAnimatedRef(black);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+}
+
+glDisable(GL_CULL_FACE);
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // (B) Main scene into HDR FBO
         glViewport(0,0,gW,gH);
@@ -1388,6 +1820,52 @@ int main(){
             glBindTexture(GL_TEXTURE_2D, 0);
             glUseProgram(0);
         }
+        // 2.5) Water plane (okean ispod table) — reflection + Gerstner
+        {
+            glUseProgram(progWater);
+
+            // CENTRIRAJ okean ispod KAMERE po XZ da ivice nikad ne uđu u kadar
+            glm::vec3 oceanCenter = glm::vec3(eye.x, gWaterY, eye.z);
+
+            glm::mat4 model =
+                glm::translate(glm::mat4(1), oceanCenter) *
+                glm::scale(glm::mat4(1), glm::vec3(gOceanScale, 1.0f, gOceanScale));
+
+            glm::mat4 VP = gProj * view;
+
+            // Matrice
+            glUniformMatrix4fv(uW_uModel, 1, GL_FALSE, glm::value_ptr(model));
+            glUniformMatrix4fv(uW_uVP,    1, GL_FALSE, glm::value_ptr(VP));
+            glUniformMatrix4fv(uW_uRefVP, 1, GL_FALSE, glm::value_ptr(VPRef));
+
+            // Vreme/kamera/svetlo
+            glUniform1f(uW_uTime, t);
+            glUniform3fv(uW_uCam, 1, glm::value_ptr(eye));
+            glUniform3fv(uW_uLight, 1, glm::value_ptr(lightPos));
+
+            // Parametri talasa / optike (ostavi kako si ih već pojačao;
+            // evo jedne provereno dobre kombinacije)
+            glUniform3f(uW_uTint,  0.06f, 0.11f, 0.16f);
+            glUniform1f(uW_uF0,    0.04f);
+
+            // veći pomeraj refleksije (više “valjanja” slike)
+            glUniform1f(uW_uDist,  0.055f);
+
+            // krupni talasi = VEĆA amplituda, MANJA frekvencija, sporiji
+            glUniform1f(uW_uAmp,   0.22f);   // (0.18–0.28)
+            glUniform1f(uW_uFreq,  1.65f);   // (1.2–2.2) ↓ duži talasi
+
+            // Reflection tekstura iz FBO-a
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, reflectTex);
+            glUniform1i(uW_uRef, 3);
+
+            gWaterMesh.draw();
+
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glUseProgram(0);
+        }
+
 
         // 3) Particles (bez senke, additive)
         {
