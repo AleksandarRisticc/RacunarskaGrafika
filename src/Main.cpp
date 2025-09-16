@@ -79,6 +79,12 @@ static float  gWaterY = -0.50f;
 static float gOceanScale = 220.0f; // veličina okeana u world jedinicama
 
 
+// ---------- SKY: globals ----------
+static GLuint progSky = 0;
+static GLint uS_uView = -1, uS_uProj = -1;
+static GLint uS_uColorTop = -1, uS_uColorHorizon = -1;
+
+
 static void destroyReflection(){
     if(reflectFBO){ glDeleteFramebuffers(1,&reflectFBO); reflectFBO=0; }
     if(reflectTex){ glDeleteTextures(1,&reflectTex); reflectTex=0; }
@@ -822,6 +828,42 @@ void main(){
 )GLSL";
 
 
+static const char* VERT_SKY = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 aPos;
+
+out vec3 vDir;
+
+uniform mat4 uView;
+uniform mat4 uProj;
+
+void main() {
+    // izbacujemo translaciju iz view matrice (da se nebo ne pomera kad hodaš)
+    mat4 viewRot = mat4(mat3(uView));
+    vDir = (viewRot * vec4(aPos, 0.0)).xyz;
+
+    gl_Position = uProj * vec4(aPos, 1.0);
+}
+)GLSL";
+
+static const char* FRAG_SKY = R"GLSL(
+#version 330 core
+in vec3 vDir;
+out vec4 FragColor;
+
+uniform vec3 uColorTop;     // boja zenita
+uniform vec3 uColorHorizon; // boja horizonta
+
+void main() {
+    float t = clamp(normalize(vDir).y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 col = mix(uColorHorizon, uColorTop, t);
+    FragColor = vec4(col, 1.0);
+}
+)GLSL";
+
+
+
+
 
 
 
@@ -939,6 +981,8 @@ static Mesh buildUnitCylinder(){
     Mesh m; m.upload(V,I); return m;
 }
 static Mesh gWaterMesh;
+static Mesh gSkyMesh;
+
 static Mesh buildWaterGrid(int N = 128){
     // N x N quad-grid u XZ ravni (y=0), normal (0,1,0), UV 0..1
     std::vector<Vertex> V; V.reserve((N+1)*(N+1));
@@ -964,6 +1008,29 @@ static Mesh buildWaterGrid(int N = 128){
         }
     }
     Mesh m; m.upload(V, I); return m;
+}
+
+static Mesh buildSkyCube() {
+    float verts[] = {
+        -1,-1,-1,  1,-1,-1,  1, 1,-1,  -1, 1,-1,
+        -1,-1, 1,  1,-1, 1,  1, 1, 1,  -1, 1, 1
+    };
+    unsigned idx[] = {
+        0,1,2, 2,3,0,
+        4,5,6, 6,7,4,
+        0,4,7, 7,3,0,
+        1,5,6, 6,2,1,
+        3,2,6, 6,7,3,
+        0,1,5, 5,4,0
+    };
+    std::vector<Vertex> V;
+    std::vector<unsigned> I;
+    for(int i=0;i<8;i++){
+        V.push_back({{verts[i*3+0],verts[i*3+1],verts[i*3+2]},{0,0,0},{0,0},1.0f});
+    }
+    for(int i=0;i<36;i++) I.push_back(idx[i]);
+    Mesh m; m.upload(V,I);
+    return m;
 }
 
 
@@ -1365,6 +1432,12 @@ int main(){
         return -1;
     }
 
+    progSky = link_src(VERT_SKY, FRAG_SKY);
+    if (!progSky) {
+        std::cerr << "FATAL: sky shader failed\n";
+        return -1;
+    }
+
     // POST: programs
     progBright  = link_src(VS_FSQUAD, FS_BRIGHT);
     progBlur    = link_src(VS_FSQUAD, FS_BLUR);
@@ -1384,6 +1457,7 @@ int main(){
     gRookCrenelMesh = buildRookCrenelMesh();
     gUnitCyl        = buildUnitCylinder();
     gWaterMesh = buildWaterGrid(128);
+    gSkyMesh = buildSkyCube();
     gBill.init(progBill);
     uiInit(progUIsh);
     GLuint gRoughTex = makeRoughnessTex();
@@ -1502,6 +1576,12 @@ int main(){
     GLint uW_uSpeed = glGetUniformLocation(progWater, "uSpeed");
     GLint uW_uLight = glGetUniformLocation(progWater, "uLightPos");
 
+    // Sky uniforms
+    GLint uS_uView         = glGetUniformLocation(progSky, "uView");
+    GLint uS_uProj         = glGetUniformLocation(progSky, "uProj");
+    GLint uS_uColorTop     = glGetUniformLocation(progSky, "uColorTop");
+    GLint uS_uColorHorizon = glGetUniformLocation(progSky, "uColorHorizon");
+
     double lastT=glfwGetTime();
     while(!glfwWindowShouldClose(win)){
         glfwPollEvents();
@@ -1552,10 +1632,28 @@ int main(){
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // (Ref) Reflection pass into reflectFBO
-glViewport(0,0,gW,gH);
-glBindFramebuffer(GL_FRAMEBUFFER, reflectFBO);
-glClearColor(0.06f,0.07f,0.10f,1.0f);
-glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glViewport(0,0,gW,gH);
+        glBindFramebuffer(GL_FRAMEBUFFER, reflectFBO);
+        glClearColor(0.06f,0.07f,0.10f,1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // ---- SKY u reflection pass-u ----
+        glDepthMask(GL_FALSE);
+        glUseProgram(progSky);
+
+        glm::mat4 viewNoTransRef = glm::mat4(glm::mat3(viewRef)); // viewRef je reflektovan
+        glUniformMatrix4fv(uS_uView, 1, GL_FALSE, glm::value_ptr(viewNoTransRef));
+        glUniformMatrix4fv(uS_uProj, 1, GL_FALSE, glm::value_ptr(gProj));
+
+        glUniform3f(uS_uColorTop,     0.05f, 0.10f, 0.25f);
+        glUniform3f(uS_uColorHorizon, 0.40f, 0.55f, 0.85f);
+
+        gSkyMesh.draw();
+
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
+
+
 
 // Kod refleksije: zbog mirrora često treba okrenuti culling.
 // Tvoj glCullFace je uglavnom OFF; ali za sigurnost:
@@ -1693,6 +1791,23 @@ glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, sceneFBO);
         glClearColor(0.06f,0.07f,0.10f,1.0f);
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+        // ---- SKY ----
+        glDepthMask(GL_FALSE); // da ne upisuje depth
+        glUseProgram(progSky);
+
+        glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); // view bez translacije
+        glUniformMatrix4fv(uS_uView, 1, GL_FALSE, glm::value_ptr(viewNoTrans));
+        glUniformMatrix4fv(uS_uProj, 1, GL_FALSE, glm::value_ptr(gProj));
+
+        // boje gradijenta
+        glUniform3f(uS_uColorTop,     0.05f, 0.10f, 0.25f);
+        glUniform3f(uS_uColorHorizon, 0.40f, 0.55f, 0.85f);
+
+        gSkyMesh.draw();
+
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
 
         // 0) LAMPA (unlit) — vizuelna reprezentacija
         {
