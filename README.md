@@ -58,11 +58,14 @@
 - **Proceduralne teksture** - šahovski uzorak u fragment shaderu  
 - **Animated particle systems** - čestice sa kretanjem i interakcijom
 - **Spotlight shadows and point light shadows** - usmereno centralno svetlo iznad table + senke
+- **Renderovanje vode
+- **Volumetric Light Scattering (Godrays)
+- ** Font and GUI rendering, GUIs in 3D space
   ### Ostalo:
 - **Interaktivnost** - kretanje šahovskih figura, dugmići, logika igre, tajmer, GUI...
 - **Hijerarhije objekata** - rotirajući elementi vezani za figure
-- **Korišćenje drugih tekstura pored albedo** - roughness teksturni uzorak za dodatni shine
-- **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje)
+- **Korišćenje drugih tekstura pored albedo** - roughness teksturni uzorak za dodatni shine, ambient occlusion
+- **Post-processing pipeline + efekti** - fleksibilan pipeline sa tonemap-om i bloom efektom (sa tastaturnom kontrolom za uključivanje/isključivanje) dodat i godrays
   ### Opciono:
 - Implementiran i zvuk
 - ## Projekat pokriva sve zahteve specifikacije :D
