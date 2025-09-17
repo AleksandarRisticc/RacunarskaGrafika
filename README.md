@@ -71,12 +71,3 @@
 - ## Projekat pokriva sve zahteve specifikacije :D
 
 ---
-
-## Šta još treba da se uradi
-
-### Nemanja
-- Eventualno jos jedna tehnika
-- Eventualno jos pipeline efekata
-- README  
-
----
